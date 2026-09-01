@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
+import argparse
 import logging
 import os
 import random
 import re
 import shutil
-import sys
 import traceback
 from pathlib import Path
 
@@ -142,9 +142,9 @@ def _fuzzer_log_terminal_block_has_server_mle(fuzzer_log: Path) -> bool:
 
 
 # BUZZHOUSE_ORACLE in Common/ErrorCodes.cpp. main() returns the error code but the OS
-# keeps only its low byte, so 1016 reaches the job as exit 248. Oracle findings use their
+# keeps only its low byte, so 1017 reaches the job as exit 249. Oracle findings use their
 # own code precisely so they are never confused with a BUZZHOUSE (739) config error.
-BUZZHOUSE_ORACLE_ERROR_CODE = 1016
+BUZZHOUSE_ORACLE_ERROR_CODE = 1017
 BUZZHOUSE_ORACLE_EXIT_CODE = BUZZHOUSE_ORACLE_ERROR_CODE & 0xFF
 
 # Genuine (non-OOM) failure signals that veto the OOM-is-success downgrade, so a real
@@ -252,6 +252,7 @@ def get_run_command(
     buzzhouse: bool,
     targeted_queries_file: Path | None = None,
     compatibility_setting: str | None = None,
+    enable_oracle: bool = False,
 ) -> str:
     from ci.jobs.ci_utils import is_extended_run
 
@@ -265,6 +266,8 @@ def get_run_command(
         envs.append(f"-e TARGETED_QUERIES_FILE='{container_queries_file}'")
     if compatibility_setting:
         envs.append(f"-e FUZZER_COMPATIBILITY='{compatibility_setting}'")
+    if enable_oracle:
+        envs.append("-e FUZZER_ORACLE_ENABLED=1")
 
     env_str = " ".join(envs)
 
@@ -389,6 +392,7 @@ def analyze_job_logs(
     sw: Utils.Stopwatch,
     server_fuzzer: bool,
     error_logs: list[Path] | None = None,
+    buzzhouse: bool = False,
 ) -> Result:
     """`error_logs`, when given, holds the current clickhouse-server.err.log of each node,
     in the same per-node order as `stderr_logs`, so the OOM classifier can name the node a
@@ -403,7 +407,7 @@ def analyze_job_logs(
     is_failed = True
     # A wrong-result finding, not a crash: it must skip the OOM checks and the crash log
     # parser below. The exit code alone cannot prove one - it is truncated to 8 bits, so
-    # 248, 504 and 760 all look like BUZZHOUSE_ORACLE (1016) - hence the log marker too.
+    # 249, 505 and 761 all look like BUZZHOUSE_ORACLE (1017) - hence the log marker too.
     # Only the tail: BuzzHouse exits on the oracle error, so the one that ended the run is
     # at the end of the log, and an older match is from a step that already finished.
     oracle_error = (
@@ -469,6 +473,21 @@ def analyze_job_logs(
             or "BuzzHouse fuzzer exception not found, fuzzer issue?"
         )
         info.append(f"ERROR: {error_info}")
+    elif fuzzer_exit_code == 49 and not buzzhouse and not server_fuzzer:
+        # AST fuzzer client called _exit(49) after the server-side oracle
+        # reported a wrong-result mismatch. The fuzzer log contains a clearly
+        # delimited "AST FUZZER ORACLE MISMATCH (fatal)" block with the
+        # reproducer query and the server-side oracle output.
+        status = Result.Status.ERROR
+        error_info = Shell.get_output(
+            f"rg --text -A 30 'AST FUZZER ORACLE MISMATCH' {fuzzer_log}"
+        )
+        if not error_info:
+            error_info = (
+                "AST fuzzer oracle mismatch detected, but the marker block was "
+                "not found in the fuzzer log (see attached fuzzer.log)."
+            )
+        info.append(f"ERROR: AST fuzzer oracle mismatch\n{error_info}")
     else:
         status = Result.Status.ERROR
         # The server was alive, but the fuzzer returned some error. This might
@@ -590,6 +609,13 @@ def analyze_job_logs(
         # fails because no `.zst.enc` / `.rsa` artifact is produced for cores.
         result.set_files(ClickHouseService.collect_cores(WORKSPACE_PATH))
 
+    # Attach logs whenever the fuzzer did not finish cleanly. A clean finish is
+    # exit code 0; any non-zero exit (real failure, oracle mismatch, SIGTERM /
+    # SIGKILL from the FUZZ_TIME_LIMIT timeout wrapper) is informative enough
+    # that we want the artifacts uploaded — otherwise timeouts look like silent
+    # passes with no logs to diagnose them from. Not for the Dolor wrapper: it
+    # ends every run with a kill and attaches artifacts itself when it reports.
+    if is_failed or (not server_fuzzer and fuzzer_exit_code != 0):
         for file in paths:
             if file.exists() and file.stat().st_size > 0:
                 result.set_files(file)
@@ -697,6 +723,7 @@ def run_fuzz_job(check_name: str):
     sw = Utils.Stopwatch()
     logging.basicConfig(level=logging.INFO)
     is_targeted = "targeted" in check_name.lower()
+    is_oracle = "oracle" in check_name.lower()
     buzzhouse: bool = check_name.lower().startswith("buzzhouse")
 
     clickhouse_binary = Path(cwd) / "ci/tmp/clickhouse"
@@ -757,6 +784,7 @@ def run_fuzz_job(check_name: str):
         buzzhouse,
         targeted_queries_file=targeted_queries_file,
         compatibility_setting=compatibility_setting,
+        enable_oracle=is_oracle,
     )
     logging.info("Going to run %s", run_command)
 
@@ -829,15 +857,15 @@ def run_fuzz_job(check_name: str):
         extra_results,
         sw,
         False,
+        buzzhouse=buzzhouse,
     )
 
     result.complete_job()
 
 
 if __name__ == "__main__":
-    check_name = sys.argv[1] if len(sys.argv) > 1 else os.getenv("CHECK_NAME")
-    assert (
-        check_name
-    ), "Check name must be provided as an input arg or in CHECK_NAME env"
+    parser = argparse.ArgumentParser()
+    parser.add_argument("check_name")
+    args = parser.parse_args()
 
-    run_fuzz_job(check_name)
+    run_fuzz_job(args.check_name)

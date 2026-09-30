@@ -47,7 +47,7 @@ struct PostgreSQLSettings
     void loadFromQueryContext(const Context & context);
 
     static bool hasBuiltin(std::string_view name);
-    SettingDescriptions enumerateSettings() const;
+    SettingDescriptions enumerateSettings(const SettingsChanges & changes) const;
 
 private:
     std::unique_ptr<PostgreSQLSettingsImpl> impl;

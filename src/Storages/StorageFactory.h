@@ -35,8 +35,9 @@ public:
     /// Used to validate if table settings belong to the engine or the query before the start of the query interpretation
     using HasBuiltinSettingFn = bool(std::string_view);
 
-    /// Describes the settings of an engine for `system.engine_settings`
-    using EnumerateEngineSettingsFn = SettingDescriptions(ContextPtr);
+    /// Describes the settings of an engine for `system.engine_settings`, with `changes` applied as a table's `SETTINGS`
+    /// clause would be; `system.engine_settings` passes none.
+    using EnumerateEngineSettingsFn = SettingDescriptions(ContextPtr, const SettingsChanges & changes);
 
     struct Arguments
     {

@@ -114,12 +114,12 @@ struct MergeTreeSettings
 
     void dumpToSystemMergeTreeSettingsColumns(MutableColumnsAndConstraints & params) const;
     void dumpToSystemCompletionsColumns(MutableColumns & columns) const;
-    SettingDescriptions enumerateSettings() const;
+    SettingDescriptions enumerateSettings(const SettingsChanges & changes) const;
     /// With `constraints` and `isReadonlySetting` applied, as `system.merge_tree_settings` shows them.
-    SettingDescriptions enumerateSettingsWithConstraints(const SettingsConstraints & constraints) const;
+    SettingDescriptions enumerateSettingsWithConstraints(const SettingsConstraints & constraints, const SettingsChanges & changes) const;
     /// For `system.engine_settings`: the server-level instance a new table starts from.
-    static SettingDescriptions enumerateEngineSettings(ContextPtr context);
-    static SettingDescriptions enumerateReplicatedEngineSettings(ContextPtr context);
+    static SettingDescriptions enumerateEngineSettings(ContextPtr context, const SettingsChanges & changes);
+    static SettingDescriptions enumerateReplicatedEngineSettings(ContextPtr context, const SettingsChanges & changes);
 
     void addToProgramOptionsIfNotPresent(boost::program_options::options_description & main_options, bool allow_repeated_settings);
 

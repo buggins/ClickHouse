@@ -7,6 +7,7 @@
 #include <Storages/StorageFactory.h>
 #include <Storages/System/StorageSystemEngineSettings.h>
 #include <Storages/System/SystemTableSourceRegistry.h>
+#include <Common/SettingsChanges.h>
 
 
 namespace DB
@@ -51,7 +52,7 @@ void StorageSystemEngineSettings::fillData(MutableColumns & res_columns, Context
         if (!creator.features.enumerate_engine_settings_fn)
             continue;
 
-        for (const auto & setting : creator.features.enumerate_engine_settings_fn(context))
+        for (const auto & setting : creator.features.enumerate_engine_settings_fn(context, {}))
         {
             Array disallowed_values;
             for (const auto & value : setting.disallowed_values)

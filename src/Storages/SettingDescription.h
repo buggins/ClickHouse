@@ -10,6 +10,8 @@
 namespace DB
 {
 
+class SettingsChanges;
+
 /// One setting of a table engine, as `system.engine_settings` shows it.
 struct SettingDescription
 {
@@ -31,14 +33,15 @@ struct SettingDescription
 using SettingDescriptions = std::vector<SettingDescription>;
 
 /// The compiled defaults of `TSettings`, which is what a new table of an engine without a server-level settings
-/// instance starts from. Registered as `.enumerate_engine_settings_fn = enumerateCompiledDefaults<TSettings>`.
+/// instance starts from, with `changes` applied. Registered as
+/// `.enumerate_engine_settings_fn = enumerateCompiledDefaults<TSettings>`.
 ///
-/// `TSettings::enumerateSettings` describes one instance; every settings struct declares it and defines it with
-/// `IMPLEMENT_SETTINGS_ENUMERATION`.
+/// `TSettings::enumerateSettings` describes one instance with `changes` applied; every settings struct declares it and
+/// defines it with `IMPLEMENT_SETTINGS_ENUMERATION`.
 template <typename TSettings>
-SettingDescriptions enumerateCompiledDefaults(ContextPtr)
+SettingDescriptions enumerateCompiledDefaults(ContextPtr, const SettingsChanges & changes)
 {
-    return TSettings{}.enumerateSettings();
+    return TSettings{}.enumerateSettings(changes);
 }
 
 }

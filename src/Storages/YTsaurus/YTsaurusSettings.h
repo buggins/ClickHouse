@@ -43,7 +43,7 @@ struct YTsaurusSettings
     static YTsaurusSettings createFromQuery(ASTStorage & storage_def);
     static YTsaurusSettings createFromQuery(const ASTSetQuery & settings_def);
     static bool hasBuiltin(std::string_view name);
-    SettingDescriptions enumerateSettings() const;
+    SettingDescriptions enumerateSettings(const SettingsChanges & changes) const;
 
 private:
     std::unique_ptr<YTsaurusSettingsImpl> impl;

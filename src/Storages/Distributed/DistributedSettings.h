@@ -45,10 +45,10 @@ struct DistributedSettings
     void applyBackgroundInsertDefaults(const Settings & query_settings);
 
     static bool hasBuiltin(std::string_view name);
-    SettingDescriptions enumerateSettings() const;
+    SettingDescriptions enumerateSettings(const SettingsChanges & changes) const;
     /// For `system.engine_settings`: the server-level instance a new table starts from, with the `background_insert_*`
     /// settings filled from the global context, which the engine's creator reads them from.
-    static SettingDescriptions enumerateEngineSettings(ContextPtr context);
+    static SettingDescriptions enumerateEngineSettings(ContextPtr context, const SettingsChanges & changes);
 
 private:
     std::unique_ptr<DistributedSettingsImpl> impl;

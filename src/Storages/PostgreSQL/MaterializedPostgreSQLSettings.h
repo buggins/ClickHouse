@@ -37,7 +37,7 @@ struct MaterializedPostgreSQLSettings
     void loadFromQuery(ASTStorage & storage_def);
 
     static bool hasBuiltin(std::string_view name);
-    SettingDescriptions enumerateSettings() const;
+    SettingDescriptions enumerateSettings(const SettingsChanges & changes) const;
 
 private:
     std::unique_ptr<MaterializedPostgreSQLSettingsImpl> impl;

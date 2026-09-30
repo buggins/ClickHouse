@@ -2,6 +2,7 @@
 
 #include <Core/BaseSettings.h>
 #include <Storages/SettingDescription.h>
+#include <Common/SettingsChanges.h>
 
 namespace DB
 {
@@ -26,9 +27,26 @@ SettingDescriptions enumerateSettingsFromImpl(const BaseSettings<TTraits> & impl
     return result;
 }
 
+/// Applies the changes whose names `settings` declares. Other names are not settings of this object - a table's
+/// `SETTINGS` clause can also carry, for example, format settings that the engine handles elsewhere.
+template <typename TSettingsImpl>
+void applyDeclaredChanges(TSettingsImpl & settings, const SettingsChanges & changes)
+{
+    for (const auto & change : changes)
+        if (TSettingsImpl::hasBuiltin(change.name))
+            settings.applyChange(change);
+}
+
 /// Defines `TYPE::enumerateSettings`. Belongs in the settings struct's .cpp, the only place its `Impl` type is
-/// complete.
+/// complete. The changes are applied to a copy; the object itself is not modified.
 #define IMPLEMENT_SETTINGS_ENUMERATION(TYPE) \
-    SettingDescriptions TYPE::enumerateSettings() const { return enumerateSettingsFromImpl(*impl); }
+    SettingDescriptions TYPE::enumerateSettings(const SettingsChanges & changes) const \
+    { \
+        if (changes.empty()) \
+            return enumerateSettingsFromImpl(*impl); \
+        auto settings = *impl; \
+        applyDeclaredChanges(settings, changes); \
+        return enumerateSettingsFromImpl(settings); \
+    }
 
 }

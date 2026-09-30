@@ -3423,7 +3423,7 @@ void MergeTreeSettings::dumpToSystemMergeTreeSettingsColumns(MutableColumnsAndCo
 {
     MutableColumns & res_columns = params.res_columns;
 
-    for (const auto & setting : enumerateSettingsWithConstraints(params.constraints))
+    for (const auto & setting : enumerateSettingsWithConstraints(params.constraints, {}))
     {
         Array disallowed_values;
         for (const auto & value : setting.disallowed_values)
@@ -3445,9 +3445,10 @@ void MergeTreeSettings::dumpToSystemMergeTreeSettingsColumns(MutableColumnsAndCo
     }
 }
 
-SettingDescriptions MergeTreeSettings::enumerateSettingsWithConstraints(const SettingsConstraints & constraints) const
+SettingDescriptions MergeTreeSettings::enumerateSettingsWithConstraints(
+    const SettingsConstraints & constraints, const SettingsChanges & changes) const
 {
-    auto settings = enumerateSettings();
+    auto settings = enumerateSettings(changes);
     for (auto & setting : settings)
     {
         Field min;
@@ -3471,16 +3472,16 @@ SettingDescriptions MergeTreeSettings::enumerateSettingsWithConstraints(const Se
     return settings;
 }
 
-SettingDescriptions MergeTreeSettings::enumerateEngineSettings(ContextPtr context)
+SettingDescriptions MergeTreeSettings::enumerateEngineSettings(ContextPtr context, const SettingsChanges & changes)
 {
     return context->getMergeTreeSettings().enumerateSettingsWithConstraints(
-        context->getSettingsConstraintsAndCurrentProfiles()->constraints);
+        context->getSettingsConstraintsAndCurrentProfiles()->constraints, changes);
 }
 
-SettingDescriptions MergeTreeSettings::enumerateReplicatedEngineSettings(ContextPtr context)
+SettingDescriptions MergeTreeSettings::enumerateReplicatedEngineSettings(ContextPtr context, const SettingsChanges & changes)
 {
     return context->getReplicatedMergeTreeSettings().enumerateSettingsWithConstraints(
-        context->getSettingsConstraintsAndCurrentProfiles()->constraints);
+        context->getSettingsConstraintsAndCurrentProfiles()->constraints, changes);
 }
 
 void MergeTreeSettings::dumpToSystemCompletionsColumns(MutableColumns & res_columns) const

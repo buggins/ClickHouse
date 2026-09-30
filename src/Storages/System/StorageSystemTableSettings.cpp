@@ -1,0 +1,228 @@
+#include <Access/Common/AccessType.h>
+#include <Access/ContextAccess.h>
+#include <Columns/ColumnString.h>
+#include <Core/Settings.h>
+#include <Core/SettingsSecrets.h>
+#include <Core/SettingsTierType.h>
+#include <DataTypes/DataTypeArray.h>
+#include <DataTypes/DataTypeEnum.h>
+#include <DataTypes/DataTypeNullable.h>
+#include <DataTypes/DataTypeString.h>
+#include <DataTypes/DataTypesNumber.h>
+#include <Databases/IDatabase.h>
+#include <Interpreters/Context.h>
+#include <Interpreters/DatabaseCatalog.h>
+#include <Interpreters/formatWithPossiblyHidingSecrets.h>
+#include <Parsers/ASTCreateQuery.h>
+#include <Parsers/ASTFunction.h>
+#include <Parsers/ASTSetQuery.h>
+#include <Parsers/engineSettingsToHide.h>
+#include <Storages/StorageFactory.h>
+#include <Storages/System/StorageSystemTableSettings.h>
+#include <Storages/System/SystemTableSourceRegistry.h>
+#include <Storages/VirtualColumnUtils.h>
+#include <Common/SettingsChanges.h>
+
+
+namespace DB
+{
+
+namespace Setting
+{
+    extern const SettingsBool show_remote_databases_in_system_tables;
+}
+
+namespace ErrorCodes
+{
+    extern const int LOGICAL_ERROR;
+}
+
+ColumnsDescription StorageSystemTableSettings::getColumnsDescription()
+{
+    return ColumnsDescription
+    {
+        {"database",    std::make_shared<DataTypeString>(), "Database of the table."},
+        {"table",       std::make_shared<DataTypeString>(), "Name of the table."},
+        {"engine_name",  std::make_shared<DataTypeString>(), "Name of the table engine."},
+        {"name",        std::make_shared<DataTypeString>(), "Setting name."},
+        {"value",       std::make_shared<DataTypeString>(), "Setting value."},
+        {"default",     std::make_shared<DataTypeString>(), "Setting default value."},
+        {"changed",     std::make_shared<DataTypeUInt8>(), "1 if the setting was explicitly defined in the config or explicitly changed."},
+        {"description", std::make_shared<DataTypeString>(), "Setting description."},
+        {"min",         std::make_shared<DataTypeNullable>(std::make_shared<DataTypeString>()), "Minimum value of the setting, if any is set via constraints. If the setting has no minimum value, contains NULL."},
+        {"max",         std::make_shared<DataTypeNullable>(std::make_shared<DataTypeString>()), "Maximum value of the setting, if any is set via constraints. If the setting has no maximum value, contains NULL."},
+        {"disallowed_values",         std::make_shared<DataTypeArray>(std::make_shared<DataTypeString>()), "List of disallowed values"},
+        {"readonly",    std::make_shared<DataTypeUInt8>(),
+            "Shows whether the current user can change the setting: "
+            "0 — Current user can change the setting, "
+            "1 — Current user can't change the setting."
+        },
+        {"type",        std::make_shared<DataTypeString>(), "Setting type (implementation specific string value)."},
+        {"is_obsolete", std::make_shared<DataTypeUInt8>(), "Shows whether a setting is obsolete."},
+        {"tier", getSettingsTierEnum(), R"(
+Support level for this feature. ClickHouse features are organized in tiers, varying depending on the current status of their
+development and the expectations one might have when using them:
+* PRODUCTION: The feature is stable, safe to use and does not have issues interacting with other PRODUCTION features.
+* BETA: The feature is stable and safe. The outcome of using it together with other features is unknown and correctness is not guaranteed. Testing and reports are welcome.
+* EXPERIMENTAL: The feature is under development. Only intended for developers and ClickHouse enthusiasts. The feature might or might not work and could be removed at any time.
+* PRIVATE PREVIEW: The feature is on a clear path to general availability. Its applicability is still limited and it is not recommended for production use.
+* OBSOLETE: No longer supported. Either it is already removed or it will be removed in future releases.
+)"},
+    };
+}
+
+namespace
+{
+
+/// A change whose value is an expression, such as `disk = disk(type = ..., ...)`, defines something the engine
+/// creates from it when the table is created. It is shown as written, with secrets hidden as `SHOW CREATE TABLE`
+/// hides them, rather than created again.
+SettingsChanges withExpressionsAsText(SettingsChanges changes, bool show_secrets)
+{
+    for (auto & change : changes)
+    {
+        CustomType custom;
+        if (change.value.tryGet<CustomType>(custom) && 0 == strcmp(custom.getTypeName(), "AST"))
+            change.value = custom.toString(show_secrets);
+    }
+    return changes;
+}
+
+/// The value as this user may see it, with a secret hidden by the rules `SHOW CREATE TABLE` uses. A value equal to
+/// the compiled-in default holds no secret, so an unset password is not reported as hidden.
+String visibleValue(const SettingDescription & setting, bool show_secrets)
+{
+    if (show_secrets || setting.value == setting.default_value)
+        return setting.value;
+
+    String value = setting.value;
+    if (CoreSettings::maskSettingValue(setting.name, Field(setting.value), value))
+        return value;
+
+    for (const auto * settings_to_hide : engineSettingsToHide())
+    {
+        const auto it = settings_to_hide->find(setting.name);
+        if (it == settings_to_hide->end())
+            continue;
+
+        const auto rendered = it->second(Field(setting.value));
+        if (!rendered)
+            return setting.value;
+
+        /// A rule renders SQL: the value to show, in single quotes.
+        if (rendered->size() < 2 || rendered->front() != '\'' || rendered->back() != '\'')
+            throw Exception(
+                ErrorCodes::LOGICAL_ERROR, "The masking rule of setting {} did not return a quoted string", setting.name);
+        return rendered->substr(1, rendered->size() - 2);
+    }
+
+    return setting.value;
+}
+
+}
+
+Block StorageSystemTableSettings::getFilterSampleBlock() const
+{
+    /// Every column of the blocks `fillData` passes to `filterBlockWithPredicate`.
+    return {
+        {{}, std::make_shared<DataTypeString>(), "database"},
+        {{}, std::make_shared<DataTypeString>(), "table"},
+    };
+}
+
+void StorageSystemTableSettings::fillData(
+    MutableColumns & res_columns, ContextPtr context, const ActionsDAG::Node * predicate, std::vector<UInt8>) const
+{
+    const auto access = context->getAccess();
+    const bool show_tables_granted = access->isGranted(AccessType::SHOW_TABLES);
+    const bool show_secrets = canDisplaySecrets(context);
+    const auto & storages = StorageFactory::instance().getAllStorages();
+
+    /// Lake catalogs are left out, as in `system.s3_queue_settings`: their tables live in a remote catalog and state
+    /// no settings of their own. Remote databases follow the setting `system.tables` follows.
+    const auto databases = DatabaseCatalog::instance().getDatabases(GetDatabasesOptions{
+        .with_datalake_catalogs = false,
+        .with_remote_databases = context->getSettingsRef()[Setting::show_remote_databases_in_system_tables]});
+
+    /// The query's condition on `database` and `table` is applied to the names first, so a table's definition is read
+    /// only for the rows the query asks for. Only names this user may see are filtered, so the condition cannot probe
+    /// the others; a database is visible as in `system.databases`.
+    const bool show_databases_granted = access->isGranted(AccessType::SHOW_DATABASES);
+    MutableColumnPtr database_names = ColumnString::create();
+    for (const auto & [database_name, database] : databases)
+        if (database_name != DatabaseCatalog::TEMPORARY_DATABASE
+            && (show_databases_granted || access->isGranted(AccessType::SHOW_DATABASES, database_name)))
+            database_names->insert(database_name);
+    Block databases_block{ColumnWithTypeAndName(std::move(database_names), std::make_shared<DataTypeString>(), "database")};
+    VirtualColumnUtils::filterBlockWithPredicate(predicate, databases_block, context);
+    const auto & filtered_databases = databases_block.getByPosition(0).column;
+
+    MutableColumnPtr table_databases = ColumnString::create();
+    MutableColumnPtr table_names = ColumnString::create();
+    for (size_t i = 0; i < filtered_databases->size(); ++i)
+    {
+        const String database_name{filtered_databases->getDataAt(i)};
+        const bool show_tables_in_database = show_tables_granted || access->isGranted(AccessType::SHOW_TABLES, database_name);
+        for (auto it = databases.at(database_name)->getTablesIterator(context); it->isValid(); it->next())
+        {
+            if (!show_tables_in_database && !access->isGranted(AccessType::SHOW_TABLES, database_name, it->name()))
+                continue;
+            table_databases->insert(database_name);
+            table_names->insert(it->name());
+        }
+    }
+    Block tables_block{
+        ColumnWithTypeAndName(std::move(table_databases), std::make_shared<DataTypeString>(), "database"),
+        ColumnWithTypeAndName(std::move(table_names), std::make_shared<DataTypeString>(), "table")};
+    VirtualColumnUtils::filterBlockWithPredicate(predicate, tables_block, context);
+
+    const auto & filtered_table_databases = tables_block.getByPosition(0).column;
+    const auto & filtered_table_names = tables_block.getByPosition(1).column;
+    for (size_t i = 0; i < filtered_table_names->size(); ++i)
+    {
+        const String database_name{filtered_table_databases->getDataAt(i)};
+        const String table_name{filtered_table_names->getDataAt(i)};
+
+        /// A view, a dictionary and a table created `AS` a table function have no engine definition of their own.
+        const auto create_ast = databases.at(database_name)->tryGetCreateTableQuery(table_name, context);
+        const auto * create = create_ast ? create_ast->as<ASTCreateQuery>() : nullptr;
+        if (!create || !create->storage || !create->storage->engine)
+            continue;
+
+        const auto engine = storages.find(create->storage->engine->name);
+        if (engine == storages.end() || !engine->second.features.enumerate_engine_settings_fn)
+            continue;
+
+        SettingsChanges changes;
+        if (create->storage->settings)
+            changes = withExpressionsAsText(create->storage->settings->changes, show_secrets);
+
+        for (const auto & setting : engine->second.features.enumerate_engine_settings_fn(context, changes))
+        {
+            Array disallowed_values;
+            for (const auto & value : setting.disallowed_values)
+                disallowed_values.emplace_back(value);
+
+            size_t col = 0;
+            res_columns[col++]->insert(database_name);
+            res_columns[col++]->insert(table_name);
+            res_columns[col++]->insert(engine->first);
+            res_columns[col++]->insert(setting.name);
+            res_columns[col++]->insert(visibleValue(setting, show_secrets));
+            res_columns[col++]->insert(setting.default_value);
+            res_columns[col++]->insert(setting.changed);
+            res_columns[col++]->insert(setting.comment);
+            res_columns[col++]->insert(setting.min_value ? Field(*setting.min_value) : Field());
+            res_columns[col++]->insert(setting.max_value ? Field(*setting.max_value) : Field());
+            res_columns[col++]->insert(disallowed_values);
+            res_columns[col++]->insert(setting.readonly);
+            res_columns[col++]->insert(setting.type);
+            res_columns[col++]->insert(setting.tier == SettingsTierType::OBSOLETE);
+            res_columns[col++]->insert(setting.tier);
+        }
+    }
+}
+
+}
+
+namespace DB { REGISTER_SYSTEM_TABLE_SOURCE(StorageSystemTableSettings) }

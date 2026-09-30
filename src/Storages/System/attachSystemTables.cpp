@@ -65,6 +65,7 @@
 #include <Storages/System/StorageSystemSettingsChanges.h>
 #include <Storages/System/StorageSystemMergeTreeSettings.h>
 #include <Storages/System/StorageSystemEngineSettings.h>
+#include <Storages/System/StorageSystemTableSettings.h>
 #include <Storages/System/StorageSystemDatabaseEngines.h>
 #include <Storages/System/StorageSystemStatements.h>
 #include <Storages/System/StorageSystemTableEngines.h>
@@ -1231,6 +1232,53 @@ ORDER BY name
 - [system.replicated_merge_tree_settings](/reference/system-tables/replicated_merge_tree_settings)
 - [system.table_engines](/reference/system-tables/table_engines)
 - [Table engines](/reference/engines/table-engines/index)
+)DOCS_MD");
+    attach<StorageSystemTableSettings>(context, system_database, "table_settings", R"DOCS_MD(
+.description
+Contains the engine-specific settings of tables, one row per table and setting, with their values, default values and descriptions.
+
+A row is the engine's row in [`system.engine_settings`](/reference/system-tables/engine_settings) with the table's own `SETTINGS` clause applied, as it is stored in the table's definition. [`ALTER TABLE ... MODIFY SETTING`](/reference/statements/alter/setting) changes the stored definition, so altered values are shown too. `changed` is 1 for a setting that the table's `SETTINGS` clause or the server configuration sets, even to its default value.
+
+A setting whose value is an expression, such as `disk = disk(...)`, is shown as the expression is written.
+
+.columns_notes
+Reading the table needs the `SELECT` grant on it, and a table is shown only to a user who may see it through `SHOW TABLES`. A secret, such as `kafka_sasl_password`, is shown as `[HIDDEN]`, as in `SHOW CREATE TABLE`.
+
+`min`, `max`, `disallowed_values` and `readonly` come from the [constraints](/concepts/features/configuration/settings/constraints-on-settings) of the current user, as in `system.engine_settings`. They do not say whether the engine allows changing the setting with `ALTER`.
+
+Not shown:
+- Tables of engines that `system.engine_settings` does not list, such as `Join` and the `Log` family, and tables without an engine definition of their own: views, dictionaries and tables created from a table function.
+- Tables in data lake catalogs. Tables in `MySQL` and `PostgreSQL` databases are left out when [`show_remote_databases_in_system_tables`](/reference/settings/session-settings/show#show_remote_databases_in_system_tables) is off, as in `system.tables`.
+- Values that are not in the table's definition: values from a named collection, values `S3Queue` and `AzureQueue` keep in Keeper (see [`system.s3_queue_settings`](/reference/system-tables/s3_queue_settings)), and credentials that `NATS` and `RabbitMQ` take from the server configuration. Macros are shown as written.
+
+.examples
+The settings a `MergeTree` table changed through its definition and `ALTER`:
+
+```sql
+CREATE TABLE events (id UInt64) ENGINE = MergeTree ORDER BY id
+SETTINGS index_granularity = 4096, min_bytes_for_wide_part = '10M';
+
+ALTER TABLE events MODIFY SETTING parts_to_throw_insert = 500;
+
+SELECT name, value, default, changed
+FROM system.table_settings
+WHERE database = currentDatabase() AND table = 'events' AND changed
+ORDER BY name;
+```
+
+```text
+┌─name────────────────────┬─value────┬─default──┬─changed─┐
+│ index_granularity       │ 4096     │ 8192     │       1 │
+│ min_bytes_for_wide_part │ 10000000 │ 10485760 │       1 │
+│ parts_to_throw_insert   │ 500      │ 3000     │       1 │
+└─────────────────────────┴──────────┴──────────┴─────────┘
+```
+
+.see_also
+- [system.engine_settings](/reference/system-tables/engine_settings)
+- [system.merge_tree_settings](/reference/system-tables/merge_tree_settings)
+- [system.tables](/reference/system-tables/tables)
+- [ALTER TABLE ... MODIFY SETTING](/reference/statements/alter/setting)
 )DOCS_MD");
     attach<StorageSystemBuildOptions>(context, system_database, "build_options", R"DOCS_MD(
 .description

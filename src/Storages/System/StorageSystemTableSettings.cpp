@@ -15,13 +15,18 @@
 #include <Interpreters/formatWithPossiblyHidingSecrets.h>
 #include <Parsers/ASTCreateQuery.h>
 #include <Parsers/ASTFunction.h>
+#include <Parsers/ASTIdentifier_fwd.h>
+#include <Parsers/ASTLiteral.h>
 #include <Parsers/ASTSetQuery.h>
 #include <Parsers/engineSettingsToHide.h>
 #include <Storages/StorageFactory.h>
 #include <Storages/System/StorageSystemTableSettings.h>
 #include <Storages/System/SystemTableSourceRegistry.h>
 #include <Storages/VirtualColumnUtils.h>
+#include <Common/NamedCollections/NamedCollections.h>
+#include <Common/NamedCollections/NamedCollectionsFactory.h>
 #include <Common/SettingsChanges.h>
+#include <Common/quoteString.h>
 
 
 namespace DB
@@ -86,6 +91,52 @@ SettingsChanges withExpressionsAsText(SettingsChanges changes, bool show_secrets
             change.value = custom.toString(show_secrets);
     }
     return changes;
+}
+
+/// The engines whose creator loads settings from a named collection named by the first engine argument
+/// (`loadFromNamedCollection`). For others, a first argument that is an identifier is not a collection.
+bool loadsSettingsFromNamedCollection(std::string_view engine_name)
+{
+    return engine_name == "Kafka" || engine_name == "NATS" || engine_name == "RabbitMQ" || engine_name == "MySQL"
+        || engine_name == "PostgreSQL" || engine_name == "YTsaurus";
+}
+
+/// The named collection a table's engine arguments start with, and the overrides the arguments give as
+/// `key = literal`. Nothing is evaluated: an override that is an expression is left out.
+struct NamedCollectionOfTable
+{
+    String name;
+    NamedCollectionPtr collection;
+    SettingsChanges overrides;
+};
+
+std::optional<NamedCollectionOfTable> namedCollectionOf(const ASTFunction & engine)
+{
+    if (!engine.arguments || engine.arguments->children.empty())
+        return {};
+
+    const auto & arguments = engine.arguments->children;
+    const auto name = tryGetIdentifierName(arguments[0]);
+    if (!name)
+        return {};
+
+    /// A collection dropped after the table was created gives no values.
+    auto collection = NamedCollectionFactory::instance().tryGet(*name);
+    if (!collection)
+        return {};
+
+    NamedCollectionOfTable result{.name = *name, .collection = std::move(collection), .overrides = {}};
+    for (size_t i = 1; i < arguments.size(); ++i)
+    {
+        const auto * function = arguments[i]->as<ASTFunction>();
+        if (!function || function->name != "equals" || !function->arguments || function->arguments->children.size() != 2)
+            continue;
+        const auto key = tryGetIdentifierName(function->arguments->children[0]);
+        const auto * literal = function->arguments->children[1]->as<ASTLiteral>();
+        if (key && literal)
+            result.overrides.emplace_back(*key, literal->value);
+    }
+    return result;
 }
 
 /// The value as this user may see it, with a secret hidden by the rules `SHOW CREATE TABLE` uses. A value equal to
@@ -193,12 +244,64 @@ void StorageSystemTableSettings::fillData(
         if (engine == storages.end() || !engine->second.features.enumerate_engine_settings_fn)
             continue;
 
-        SettingsChanges changes;
-        if (create->storage->settings)
-            changes = withExpressionsAsText(create->storage->settings->changes, show_secrets);
-
-        for (const auto & setting : engine->second.features.enumerate_engine_settings_fn(context, changes))
+        /// The creator's order: the named collection, its overrides in the engine arguments, the `SETTINGS` clause.
+        std::optional<NamedCollectionOfTable> named_collection;
+        if (loadsSettingsFromNamedCollection(engine->first))
         {
+            NamedCollectionFactory::instance().loadIfNot();
+            named_collection = namedCollectionOf(*create->storage->engine);
+        }
+
+        SettingsChanges changes = named_collection ? named_collection->overrides : SettingsChanges{};
+        if (create->storage->settings)
+            for (const auto & change : withExpressionsAsText(create->storage->settings->changes, show_secrets))
+                changes.push_back(change);
+
+        const auto & enumerate = engine->second.features.enumerate_engine_settings_fn;
+        auto settings = enumerate(context, changes);
+
+        /// A row the collection supplies is found by comparing with the rows without it, so aliases and each class's
+        /// own handling of names apply. Like `loadFromNamedCollection`, only keys spelled as a setting's name count.
+        std::vector<bool> from_named_collection(settings.size(), false);
+        bool show_named_collection = false;
+        if (named_collection)
+        {
+            SettingsChanges with_collection;
+            for (const auto & setting : settings)
+                if (named_collection->collection->has(setting.name))
+                    with_collection.emplace_back(setting.name, named_collection->collection->get<String>(setting.name));
+            for (const auto & change : changes)
+                with_collection.push_back(change);
+
+            /// The message of an error raised while applying the collection can hold one of its values, which this user
+            /// may not see. Unlike the table's definition, a collection can be changed after the table was created.
+            SettingDescriptions settings_with_collection;
+            try
+            {
+                settings_with_collection = enumerate(context, with_collection);
+            }
+            catch (const Exception & e)
+            {
+                throw Exception(
+                    e.code(),
+                    "Named collection {} of table {}.{} holds a value that cannot be applied to the engine's settings",
+                    backQuoteIfNeed(named_collection->name), backQuoteIfNeed(database_name), backQuoteIfNeed(table_name));
+            }
+            if (settings_with_collection.size() != settings.size())
+                throw Exception(ErrorCodes::LOGICAL_ERROR, "Engine {} enumerated a different number of settings", engine->first);
+            for (size_t j = 0; j < settings.size(); ++j)
+                from_named_collection[j] = settings_with_collection[j].value != settings[j].value
+                    || settings_with_collection[j].changed != settings[j].changed;
+            settings = std::move(settings_with_collection);
+
+            /// As `system.named_collections` shows the collection's values.
+            show_named_collection = access->isGranted(AccessType::SHOW_NAMED_COLLECTIONS, named_collection->name)
+                && access->isGranted(AccessType::SHOW_NAMED_COLLECTIONS_SECRETS) && show_secrets;
+        }
+
+        for (size_t j = 0; j < settings.size(); ++j)
+        {
+            const auto & setting = settings[j];
             Array disallowed_values;
             for (const auto & value : setting.disallowed_values)
                 disallowed_values.emplace_back(value);
@@ -208,7 +311,8 @@ void StorageSystemTableSettings::fillData(
             res_columns[col++]->insert(table_name);
             res_columns[col++]->insert(engine->first);
             res_columns[col++]->insert(setting.name);
-            res_columns[col++]->insert(visibleValue(setting, show_secrets));
+            res_columns[col++]->insert(
+                from_named_collection[j] && !show_named_collection ? String("[HIDDEN]") : visibleValue(setting, show_secrets));
             res_columns[col++]->insert(setting.default_value);
             res_columns[col++]->insert(setting.changed);
             res_columns[col++]->insert(setting.comment);

@@ -1244,12 +1244,14 @@ A setting whose value is an expression, such as `disk = disk(...)`, is shown as 
 .columns_notes
 Reading the table needs the `SELECT` grant on it, and a table is shown only to a user who may see it through `SHOW TABLES`. A secret, such as `kafka_sasl_password`, is shown as `[HIDDEN]`, as in `SHOW CREATE TABLE`.
 
+A value that a named collection supplies is shown as in [`system.named_collections`](/reference/system-tables/named_collections): only to a user who may see that collection's secrets there, and otherwise as `[HIDDEN]`, which still tells that the collection supplies the setting. An override of the collection in the engine arguments is shown if it is a literal.
+
 `min`, `max`, `disallowed_values` and `readonly` come from the [constraints](/concepts/features/configuration/settings/constraints-on-settings) of the current user, as in `system.engine_settings`. They do not say whether the engine allows changing the setting with `ALTER`.
 
 Not shown:
 - Tables of engines that `system.engine_settings` does not list, such as `Join` and the `Log` family, and tables without an engine definition of their own: views, dictionaries and tables created from a table function.
 - Tables in data lake catalogs. Tables in `MySQL` and `PostgreSQL` databases are left out when [`show_remote_databases_in_system_tables`](/reference/settings/session-settings/show#show_remote_databases_in_system_tables) is off, as in `system.tables`.
-- Values that are not in the table's definition: values from a named collection, values `S3Queue` and `AzureQueue` keep in Keeper (see [`system.s3_queue_settings`](/reference/system-tables/s3_queue_settings)), and credentials that `NATS` and `RabbitMQ` take from the server configuration. Macros are shown as written.
+- Values that are not in the table's definition: values `S3Queue` and `AzureQueue` keep in Keeper (see [`system.s3_queue_settings`](/reference/system-tables/s3_queue_settings)), and credentials that `NATS` and `RabbitMQ` take from the server configuration. Macros are shown as written.
 
 .examples
 The settings a `MergeTree` table changed through its definition and `ALTER`:

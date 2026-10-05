@@ -22,3 +22,13 @@ SELECT count(DISTINCT engine_name) > 3 FROM system.engine_settings;
 -- Verify every listed engine accepts a SETTINGS clause
 SELECT DISTINCT engine_name FROM system.engine_settings
 WHERE engine_name NOT IN (SELECT name FROM system.table_engines WHERE supports_settings);
+
+-- Verify DeltaLakeLocal lists the same settings as DeltaLake: both read the data lake settings
+SELECT count() FROM
+(
+    (SELECT name FROM system.engine_settings WHERE engine_name = 'DeltaLake'
+     EXCEPT SELECT name FROM system.engine_settings WHERE engine_name = 'DeltaLakeLocal')
+    UNION ALL
+    (SELECT name FROM system.engine_settings WHERE engine_name = 'DeltaLakeLocal'
+     EXCEPT SELECT name FROM system.engine_settings WHERE engine_name = 'DeltaLake')
+);

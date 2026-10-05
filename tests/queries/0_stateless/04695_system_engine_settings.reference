@@ -17,3 +17,4 @@ tier	Enum8(\'Production\' = 0, \'Obsolete\' = 4, \'Experimental\' = 8, \'Beta\' 
 MergeTree	index_granularity	0	1	0
 Memory	compress	0	Bool
 1
+0

@@ -134,11 +134,19 @@ bool DistributedSettings::hasBuiltin(std::string_view name)
 
 SettingDescriptions DistributedSettings::enumerateEngineSettings(ContextPtr context, const SettingsChanges & changes)
 {
-    auto settings = context->getDistributedSettings();
-    settings.applyBackgroundInsertDefaults(context->getGlobalContext()->getSettingsRef());
-    /// The fill-in only sets what is still unset and `changes` override it, so a stated value wins, as when a table is
-    /// created.
-    return settings.enumerateSettings(changes);
+    /// `changed` tells whether the server configuration or the table's definition sets a setting. The fill-in gives only
+    /// the values: how it assigns them says nothing about that. It sets only what is still unset and `changes` override
+    /// it, so a stated value wins, as when a table is created.
+    const auto & configured = context->getDistributedSettings();
+    auto result = configured.enumerateSettings(changes);
+
+    auto filled = configured;
+    filled.applyBackgroundInsertDefaults(context->getGlobalContext()->getSettingsRef());
+    const auto filled_settings = filled.enumerateSettings(changes);
+    chassert(filled_settings.size() == result.size());
+    for (size_t i = 0; i < result.size(); ++i)
+        result[i].value = filled_settings[i].value;
+    return result;
 }
 
 IMPLEMENT_SETTINGS_ENUMERATION(DistributedSettings)

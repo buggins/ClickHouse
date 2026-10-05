@@ -1219,10 +1219,10 @@ ORDER BY name
 
 ```text
 ┌─name─────────────────────────────────────┬─value─┬─default─┬─changed─┐
-│ background_insert_batch                  │ 0     │ 0       │       1 │
+│ background_insert_batch                  │ 0     │ 0       │       0 │
 │ background_insert_max_sleep_time_ms      │ 30000 │ 0       │       0 │
 │ background_insert_sleep_time_ms          │ 100   │ 0       │       0 │
-│ background_insert_split_batch_on_failure │ 0     │ 0       │       1 │
+│ background_insert_split_batch_on_failure │ 0     │ 0       │       0 │
 └──────────────────────────────────────────┴───────┴─────────┴─────────┘
 ```
 

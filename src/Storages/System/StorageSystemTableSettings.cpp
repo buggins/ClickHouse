@@ -48,7 +48,7 @@ ColumnsDescription StorageSystemTableSettings::getColumnsDescription()
     {
         {"database",    std::make_shared<DataTypeString>(), "Database of the table."},
         {"table",       std::make_shared<DataTypeString>(), "Name of the table."},
-        {"engine_name",  std::make_shared<DataTypeString>(), "Name of the table engine."},
+        {"engine_name", std::make_shared<DataTypeString>(), "Name of the table engine."},
         {"name",        std::make_shared<DataTypeString>(), "Setting name."},
         {"value",       std::make_shared<DataTypeString>(), "Setting value."},
         {"default",     std::make_shared<DataTypeString>(), "Setting default value."},
